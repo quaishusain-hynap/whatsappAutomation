@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-wa-teal: #00a884;
+  --color-wa-teal-dark: #008069;
+  --color-wa-bg: #efeae2;
+  --color-wa-panel: #f0f2f5;
+  --color-wa-out: #d9fdd3;
+  --color-wa-blue: #53bdeb;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #f0f2f5;
+}
+
+/* subtle WhatsApp-style doodle background substitute */
+.chat-bg {
+  background-color: #efeae2;
+  background-image: radial-gradient(#d8d2c7 0.75px, transparent 0.75px);
+  background-size: 18px 18px;
+}

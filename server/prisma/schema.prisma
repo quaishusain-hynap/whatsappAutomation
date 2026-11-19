@@ -1,0 +1,435 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  agent
+  system
+}
+
+enum WaProviderKind {
+  baileys
+  cloud_api
+}
+
+enum WaConnStatus {
+  disconnected
+  qr_pending
+  connecting
+  connected
+  logged_out
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum MessageType {
+  text
+  image
+  video
+  audio
+  document
+  sticker
+  location
+  contact
+  reaction
+  system
+}
+
+enum MessageStatus {
+  pending
+  sent
+  delivered
+  read
+  played
+  failed
+}
+
+enum FieldType {
+  text
+  number
+  date
+  select
+  multiselect
+  boolean
+  currency
+}
+
+enum DocumentStatus {
+  pending
+  parsing
+  parsed
+  failed
+  verified
+}
+
+enum QuoteStatus {
+  offered
+  accepted
+  rejected
+  expired
+}
+
+enum BookingStatus {
+  enquiry
+  quoted
+  confirmed
+  ticketed
+  reconciled
+  cancelled
+}
+
+enum WorkflowTrigger {
+  message_received
+  document_parsed
+  entity_created
+  status_changed
+  manual
+}
+
+enum WorkflowRunStatus {
+  running
+  waiting
+  completed
+  failed
+  cancelled
+}
+
+model User {
+  id            String    @id @default(cuid())
+  username      String    @unique
+  passwordHash  String    @map("password_hash")
+  displayName   String    @map("display_name")
+  role          Role      @default(agent)
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  sentMessages  Message[]      @relation("SentBy")
+  quotes        FareQuote[]    @relation("QuotedBy")
+  verifiedDocs  Document[]     @relation("VerifiedBy")
+  auditEntries  AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model WaAccount {
+  id              String         @id @default(cuid())
+  name            String
+  phoneNumber     String?        @map("phone_number")
+  provider        WaProviderKind @default(baileys)
+  status          WaConnStatus   @default(disconnected)
+  authDir         String         @map("auth_dir")
+  lastConnectedAt DateTime?      @map("last_connected_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  contacts Contact[]
+  chats    Chat[]
+
+  @@map("wa_accounts")
+}
+
+model Contact {
+  id          String    @id @default(cuid())
+  waAccountId String    @map("wa_account_id")
+  waAccount   WaAccount @relation(fields: [waAccountId], references: [id])
+  jid         String
+  pushName    String?   @map("push_name")
+  phone       String?
+  isGroup     Boolean   @default(false) @map("is_group")
+  avatarPath  String?   @map("avatar_path")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  chats    Chat[]
+  customer Customer?
+
+  @@unique([waAccountId, jid])
+  @@map("contacts")
+}
+
+model Customer {
+  id           String   @id @default(cuid())
+  contactId    String?  @unique @map("contact_id")
+  contact      Contact? @relation(fields: [contactId], references: [id])
+  name         String
+  notes        String?
+  customData   Json     @default("{}") @map("custom_data")
+  isInternal   Boolean  @default(false) @map("is_internal")
+  internalRole String?  @map("internal_role")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  documents Document[]
+  quotes    FareQuote[]
+  bookings  Booking[]
+
+  @@map("customers")
+}
+
+model CustomerFieldDefinition {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  label     String
+  fieldType FieldType @map("field_type")
+  options   Json?
+  required  Boolean   @default(false)
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@map("customer_field_definitions")
+}
+
+model Chat {
+  id             String    @id @default(cuid())
+  waAccountId    String    @map("wa_account_id")
+  waAccount      WaAccount @relation(fields: [waAccountId], references: [id])
+  contactId      String    @map("contact_id")
+  contact        Contact   @relation(fields: [contactId], references: [id])
+  jid            String
+  lastMessageAt  DateTime? @map("last_message_at")
+  unreadCount    Int       @default(0) @map("unread_count")
+  archived       Boolean   @default(false)
+  assignedUserId String?   @map("assigned_user_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  messages     Message[]
+  documents    Document[]
+  quotes       FareQuote[]
+  bookings     Booking[]
+  workflowRuns WorkflowRun[]
+
+  @@unique([waAccountId, jid])
+  @@index([waAccountId, lastMessageAt(sort: Desc)])
+  @@map("chats")
+}
+
+model Message {
+  id              String           @id @default(cuid())
+  chatId          String           @map("chat_id")
+  chat            Chat             @relation(fields: [chatId], references: [id])
+  waMessageId     String           @map("wa_message_id")
+  direction       MessageDirection
+  senderJid       String?          @map("sender_jid")
+  sentByUserId    String?          @map("sent_by_user_id")
+  sentBy          User?            @relation("SentBy", fields: [sentByUserId], references: [id])
+  type            MessageType      @default(text)
+  body            String           @default("")
+  quotedMessageId String?          @map("quoted_message_id")
+  quotedMessage   Message?         @relation("Quoted", fields: [quotedMessageId], references: [id])
+  quotedBy        Message[]        @relation("Quoted")
+  mediaId         String?          @map("media_id")
+  media           MediaFile?       @relation(fields: [mediaId], references: [id])
+  status          MessageStatus    @default(pending)
+  timestamp       DateTime
+  raw             Json?
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  documents Document[]
+
+  @@unique([chatId, waMessageId])
+  @@index([chatId, timestamp(sort: Desc)])
+  @@map("messages")
+}
+
+model MediaFile {
+  id               String   @id @default(cuid())
+  filePath         String   @map("file_path")
+  mimeType         String   @map("mime_type")
+  sizeBytes        Int      @map("size_bytes")
+  sha256           String?
+  originalFilename String?  @map("original_filename")
+  thumbnailPath    String?  @map("thumbnail_path")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  messages  Message[]
+  documents Document[]
+
+  @@index([sha256])
+  @@map("media_files")
+}
+
+model DocumentType {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  promptHint  String?  @map("prompt_hint")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  fields    DocumentExtractionField[]
+  documents Document[]
+
+  @@map("document_types")
+}
+
+model DocumentExtractionField {
+  id             String       @id @default(cuid())
+  documentTypeId String       @map("document_type_id")
+  documentType   DocumentType @relation(fields: [documentTypeId], references: [id], onDelete: Cascade)
+  key            String
+  label          String
+  fieldType      FieldType    @map("field_type")
+  description    String?
+  required       Boolean      @default(false)
+  sortOrder      Int          @default(0) @map("sort_order")
+
+  @@unique([documentTypeId, key])
+  @@map("document_extraction_fields")
+}
+
+model Document {
+  id               String         @id @default(cuid())
+  documentTypeId   String         @map("document_type_id")
+  documentType     DocumentType   @relation(fields: [documentTypeId], references: [id])
+  mediaId          String         @map("media_id")
+  media            MediaFile      @relation(fields: [mediaId], references: [id])
+  messageId        String?        @map("message_id")
+  message          Message?       @relation(fields: [messageId], references: [id])
+  chatId           String?        @map("chat_id")
+  chat             Chat?          @relation(fields: [chatId], references: [id])
+  customerId       String?        @map("customer_id")
+  customer         Customer?      @relation(fields: [customerId], references: [id])
+  status           DocumentStatus @default(pending)
+  extractedData    Json           @default("{}") @map("extracted_data")
+  parseError       String?        @map("parse_error")
+  parsedByModel    String?        @map("parsed_by_model")
+  tokenUsage       Json?          @map("token_usage")
+  verifiedByUserId String?        @map("verified_by_user_id")
+  verifiedBy       User?          @relation("VerifiedBy", fields: [verifiedByUserId], references: [id])
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  bookings Booking[]
+
+  @@index([documentTypeId, status])
+  @@map("documents")
+}
+
+model FareQuote {
+  id              String      @id @default(cuid())
+  chatId          String      @map("chat_id")
+  chat            Chat        @relation(fields: [chatId], references: [id])
+  customerId      String?     @map("customer_id")
+  customer        Customer?   @relation(fields: [customerId], references: [id])
+  quotedByUserId  String?     @map("quoted_by_user_id")
+  quotedBy        User?       @relation("QuotedBy", fields: [quotedByUserId], references: [id])
+  route           String?
+  travelDate      DateTime?   @map("travel_date")
+  airline         String?
+  quotedAmount    Decimal     @map("quoted_amount") @db.Decimal(12, 2)
+  currency        String      @default("INR")
+  status          QuoteStatus @default(offered)
+  sourceMessageId String?     @map("source_message_id")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  bookings Booking[]
+
+  @@index([chatId])
+  @@map("fare_quotes")
+}
+
+model Booking {
+  id               String        @id @default(cuid())
+  customerId       String?       @map("customer_id")
+  customer         Customer?     @relation(fields: [customerId], references: [id])
+  chatId           String?       @map("chat_id")
+  chat             Chat?         @relation(fields: [chatId], references: [id])
+  fareQuoteId      String?       @map("fare_quote_id")
+  fareQuote        FareQuote?    @relation(fields: [fareQuoteId], references: [id])
+  ticketDocumentId String?       @map("ticket_document_id")
+  ticketDocument   Document?     @relation(fields: [ticketDocumentId], references: [id])
+  pnr              String?
+  passengerNames   Json?         @map("passenger_names")
+  sector           String?
+  travelDate       DateTime?     @map("travel_date")
+  quotedAmount     Decimal?      @map("quoted_amount") @db.Decimal(12, 2)
+  actualAmount     Decimal?      @map("actual_amount") @db.Decimal(12, 2)
+  currency         String        @default("INR")
+  status           BookingStatus @default(enquiry)
+  workflowRunId    String?       @map("workflow_run_id")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("bookings")
+}
+
+model Workflow {
+  id         String          @id @default(cuid())
+  name       String
+  isActive   Boolean         @default(true) @map("is_active")
+  trigger    WorkflowTrigger
+  conditions Json            @default("{}")
+  actions    Json            @default("[]")
+  appliesTo  Json            @default("{}") @map("applies_to")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+
+  runs WorkflowRun[]
+
+  @@map("workflows")
+}
+
+model WorkflowRun {
+  id          String            @id @default(cuid())
+  workflowId  String            @map("workflow_id")
+  workflow    Workflow          @relation(fields: [workflowId], references: [id])
+  chatId      String            @map("chat_id")
+  chat        Chat              @relation(fields: [chatId], references: [id])
+  customerId  String?           @map("customer_id")
+  state       String            @default("START")
+  context     Json              @default("{}")
+  status      WorkflowRunStatus @default(running)
+  lastEventAt DateTime          @default(now()) @map("last_event_at")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([chatId, status])
+  @@map("workflow_runs")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  details    Json?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_log")
+}
