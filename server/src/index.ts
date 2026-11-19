@@ -22,8 +22,10 @@ async function main() {
 
   const app = Fastify({ loggerInstance: logger.child({ mod: 'http' }), bodyLimit: 1024 * 1024 });
 
+  const devOrigins = [/^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/];
+
   await app.register(cors, {
-    origin: config.isProd ? false : ['http://localhost:5173'],
+    origin: config.isProd ? false : devOrigins,
     credentials: true,
   });
   await app.register(cookie);
@@ -41,7 +43,7 @@ async function main() {
 
   // socket.io shares Fastify's HTTP server
   const io: Io = new SocketIOServer(app.server, {
-    cors: { origin: config.isProd ? false : ['http://localhost:5173'], credentials: true },
+    cors: { origin: config.isProd ? false : devOrigins, credentials: true },
   });
   setIo(io);
 
