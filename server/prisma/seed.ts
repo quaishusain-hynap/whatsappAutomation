@@ -10,7 +10,7 @@ async function main() {
     create: {
       username: 'admin',
       displayName: 'Administrator',
-      passwordHash: await argon2.hash('admin123'),
+      passwordHash: await argon2.hash('vivi@12345'),
       role: 'admin',
     },
   });
