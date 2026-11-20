@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
@@ -10,22 +9,36 @@ import { logger } from '../../logger.js';
 import { prisma } from '../../db.js';
 import { normalizeBaileysMessage, mapBaileysStatus } from './normalize.js';
 import type {
+  LidPnPair,
   NormalizedMessage,
   NormalizedStatusUpdate,
   OutgoingMedia,
   SendResult,
   WhatsAppProvider,
 } from './provider.js';
-
-// Baileys ships as CJS; createRequire gives deterministic interop under ESM.
-const require = createRequire(import.meta.url);
-const baileys = require('@whiskeysockets/baileys');
-const makeWASocket = baileys.default ?? baileys.makeWASocket;
-const { useMultiFileAuthState, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion } = baileys;
-const generateMessageID: (userId?: string) => string =
-  baileys.generateMessageIDV2 ?? baileys.generateMessageID;
+// Baileys 7 is ESM-only
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  downloadMediaMessage,
+  fetchLatestBaileysVersion,
+  generateMessageIDV2,
+  jidNormalizedUser,
+} from 'baileys';
 
 const baileysLogger = pino({ level: 'silent' });
+
+const isLid = (jid: unknown): jid is string => typeof jid === 'string' && jid.endsWith('@lid');
+const isPn = (jid: unknown): jid is string =>
+  typeof jid === 'string' && jid.endsWith('@s.whatsapp.net');
+
+/** Normalize a raw {lid, pn} pair to device-less JIDs, or null if it isn't one. */
+function toPair(lid: unknown, pn: unknown): LidPnPair | null {
+  if (typeof lid !== 'string' || typeof pn !== 'string') return null;
+  const l = jidNormalizedUser(lid);
+  const p = jidNormalizedUser(pn);
+  return isLid(l) && isPn(p) ? { lid: l, pn: p } : null;
+}
 
 export class BaileysProvider implements WhatsAppProvider {
   readonly kind = 'baileys' as const;
@@ -64,7 +77,24 @@ export class BaileysProvider implements WhatsAppProvider {
   }
 
   generateMessageId(): string {
-    return generateMessageID(this.sock?.user?.id);
+    return generateMessageIDV2(this.sock?.user?.id);
+  }
+
+  private emitLidPairs(pairs: LidPnPair[]) {
+    if (pairs.length) this.events.emit('lid-mapping', pairs);
+  }
+
+  /** Look up phone-number JIDs for LIDs in Baileys' persisted mapping store. */
+  async lookupPhoneJids(lids: string[]): Promise<LidPnPair[]> {
+    const mapping = this.sock?.signalRepository?.lidMapping;
+    if (!mapping || lids.length === 0) return [];
+    try {
+      const res = (await mapping.getPNsForLIDs(lids)) ?? [];
+      return res.map((r: any) => toPair(r?.lid, r?.pn)).filter((p: LidPnPair | null): p is LidPnPair => !!p);
+    } catch (err) {
+      logger.warn({ err }, 'LID lookup failed');
+      return [];
+    }
   }
 
   async start(): Promise<void> {
@@ -179,31 +209,60 @@ export class BaileysProvider implements WhatsAppProvider {
       }
     });
 
-    sock.ev.on('messages.update', (updates: any[]) => {
+    sock.ev.on('messages.update', async (updates: any[]) => {
       const mapped: NormalizedStatusUpdate[] = [];
       for (const u of updates) {
         const status = typeof u.update?.status === 'number' ? mapBaileysStatus(u.update.status) : null;
         if (status && u.key?.remoteJid && u.key?.id) {
+          // Receipts may also be addressed by LID — route them to the phone-number chat
+          await this.resolveLids(u);
           mapped.push({ chatJid: u.key.remoteJid, waMessageId: u.key.id, status });
         }
       }
       if (mapped.length) this.events.emit('message-status', mapped);
     });
 
-    sock.ev.on('messaging-history.set', async ({ contacts, chats, messages }: any) => {
+    // WhatsApp tells us which LID belongs to which number as it learns them
+    sock.ev.on('lid-mapping.update', (m: any) => {
+      const pair = toPair(m?.lid, m?.pn);
+      if (pair) this.emitLidPairs([pair]);
+    });
+
+    sock.ev.on('messaging-history.set', async ({ contacts, chats, messages, lidPnMappings }: any) => {
+      // Pairs first, so LID chats are merged before this chunk's messages land
+      const pairs: LidPnPair[] = [];
+      for (const m of lidPnMappings ?? []) {
+        const p = toPair(m?.lid, m?.pn);
+        if (p) pairs.push(p);
+      }
+      for (const c of [...(contacts ?? []), ...(chats ?? [])]) {
+        const p = toPair(c?.lid ?? c?.lidJid ?? c?.id, c?.phoneNumber ?? c?.pnJid ?? c?.id);
+        if (p) pairs.push(p);
+      }
+      this.emitLidPairs(pairs);
+
       const normalized: NormalizedMessage[] = [];
       for (const waMsg of messages ?? []) {
         await this.resolveLids(waMsg);
         const n = normalizeBaileysMessage(waMsg);
         if (n) normalized.push(n);
       }
-      this.events.emit('history', { contacts: contacts ?? [], chats: chats ?? [], messages: normalized });
+      this.events.emit('history', {
+        contacts: (contacts ?? []).map((c: any) => ({ ...c, id: this.preferPn(c) })),
+        chats: (chats ?? []).map((c: any) => ({ ...c, id: this.preferPn(c) })),
+        messages: normalized,
+      });
     });
 
     const onContacts = (contacts: any[]) => {
+      const pairs: LidPnPair[] = [];
       for (const c of contacts) {
-        if (c.id) this.events.emit('contact-update', { jid: c.id, name: c.name ?? c.notify ?? null });
+        const p = toPair(c?.lid ?? c?.id, c?.phoneNumber ?? c?.id);
+        if (p) pairs.push(p);
+        const jid = this.preferPn(c);
+        if (jid) this.events.emit('contact-update', { jid, name: c.name ?? c.notify ?? null });
       }
+      this.emitLidPairs(pairs);
     };
     sock.ev.on('contacts.upsert', onContacts);
     sock.ev.on('contacts.update', onContacts);
@@ -226,24 +285,33 @@ export class BaileysProvider implements WhatsAppProvider {
   private async resolveLids(waMsg: any): Promise<void> {
     const key = waMsg?.key;
     if (!key) return;
+    const learned: LidPnPair[] = [];
     const mapOne = async (jid: unknown, ...alts: unknown[]): Promise<string | null> => {
-      if (typeof jid !== 'string' || !jid.endsWith('@lid')) return null;
+      if (!isLid(jid)) return null;
       for (const a of alts) {
-        if (typeof a === 'string' && a.includes('@') && !a.endsWith('@lid')) return a;
+        const p = toPair(jid, a);
+        if (p) {
+          learned.push(p);
+          return p.pn;
+        }
       }
-      try {
-        const mapping = this.sock?.signalRepository?.lidMapping;
-        const res = mapping?.getPNForLID?.(jid);
-        const pn = res && typeof res.then === 'function' ? await res : res;
-        if (typeof pn === 'string' && pn.includes('@') && !pn.endsWith('@lid')) return pn;
-      } catch { /* mapping unavailable */ }
-      return null;
+      const [found] = await this.lookupPhoneJids([jid]);
+      return found?.pn ?? null;
     };
 
-    const remote = await mapOne(key.remoteJid, key.remoteJidAlt, key.senderPn, waMsg.senderPn);
+    const remote = await mapOne(key.remoteJid, key.remoteJidAlt);
     if (remote) key.remoteJid = remote;
-    const participant = await mapOne(key.participant, key.participantAlt, key.participantPn, waMsg.participantPn);
+    const participant = await mapOne(key.participant, key.participantAlt);
     if (participant) key.participant = participant;
+    this.emitLidPairs(learned);
+  }
+
+  /** The phone-number JID for a contact/chat record when known, else its id. */
+  private preferPn(c: any): string | null {
+    const id: unknown = c?.id;
+    if (!isLid(id)) return typeof id === 'string' ? id : null;
+    const pn = c?.phoneNumber ?? c?.pnJid;
+    return typeof pn === 'string' && isPn(jidNormalizedUser(pn)) ? jidNormalizedUser(pn) : id;
   }
 
   /** Fetch subjects of all groups we participate in (run after connect). */

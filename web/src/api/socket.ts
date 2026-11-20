@@ -16,6 +16,7 @@ export function connectSocket() {
   socket.on('message:updated', (m) => chat().onMessageUpdated(m));
   socket.on('message:status', (p) => chat().onMessageStatus(p));
   socket.on('chat:updated', (c) => chat().onChatUpdated(c));
+  socket.on('chat:merged', (p) => chat().onChatMerged(p));
   socket.on('wa:status', (s) => chat().setWaStatus(s));
 
   socket.on('connect_error', async (err) => {

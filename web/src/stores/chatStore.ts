@@ -27,6 +27,7 @@ interface ChatState {
   onMessageUpdated: (m: MessageDTO) => void;
   onMessageStatus: (p: { chatId: string; messageId: string; status: MessageStatus }) => void;
   onChatUpdated: (c: ChatDTO) => void;
+  onChatMerged: (p: { fromChatId: string; intoChatId: string }) => void;
   setWaStatus: (s: WaStatusDTO) => void;
 }
 
@@ -140,6 +141,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const unread = s.activeChatId === c.id ? 0 : c.unreadCount;
       return { chats: sortChats([...others, { ...c, unreadCount: unread }]) };
     });
+  },
+
+  onChatMerged({ fromChatId, intoChatId }) {
+    const wasActive = get().activeChatId === fromChatId || get().activeChatId === intoChatId;
+    set((s) => {
+      // Drop the duplicate, and the merged chat's cached messages so they reload in full
+      const { [fromChatId]: _from, [intoChatId]: _into, ...messages } = s.messages;
+      return {
+        chats: s.chats.filter((c) => c.id !== fromChatId),
+        messages,
+        activeChatId: wasActive ? null : s.activeChatId,
+      };
+    });
+    if (wasActive) void get().openChat(intoChatId);
   },
 
   setWaStatus(s) {

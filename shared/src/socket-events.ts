@@ -6,6 +6,8 @@ export interface ServerToClientEvents {
   'message:updated': (msg: MessageDTO) => void;
   'message:status': (payload: { chatId: string; messageId: string; status: MessageStatus }) => void;
   'chat:updated': (chat: ChatDTO) => void;
+  /** `fromChatId` (an anonymous-LID duplicate) was folded into `intoChatId` and no longer exists. */
+  'chat:merged': (payload: { fromChatId: string; intoChatId: string }) => void;
   'wa:status': (status: WaStatusDTO) => void;
 }
 

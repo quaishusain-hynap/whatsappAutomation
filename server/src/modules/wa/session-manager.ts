@@ -43,6 +43,13 @@ class SessionManager {
     provider.events.on('history', (payload) => void this.pipeline!.handleHistory(payload));
     provider.events.on('message-status', (updates) => void this.pipeline!.handleStatusUpdates(updates));
     provider.events.on('contact-update', (u) => void this.pipeline!.handleContactUpdate(u));
+    provider.events.on('lid-mapping', (pairs) => void this.pipeline!.handleLidMappings(pairs));
+    // Each time we connect, fix chats stored under an anonymous LID whose number is now known
+    provider.events.on('status', (status: WaStatusDTO) => {
+      if (status.status === 'connected') {
+        void this.pipeline!.repairLidChats().catch((err) => logger.error({ err }, 'LID repair failed'));
+      }
+    });
 
     // Auto-connect if we already have credentials from a previous pairing
     const credsFile = path.join(config.dataDir, account.authDir, 'creds.json');

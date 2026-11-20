@@ -26,6 +26,12 @@ export interface NormalizedStatusUpdate {
   status: 'sent' | 'delivered' | 'read' | 'played' | 'failed';
 }
 
+/** WhatsApp's anonymous id (…@lid) paired with the real phone-number JID. */
+export interface LidPnPair {
+  lid: string;
+  pn: string;
+}
+
 export interface SendResult {
   waMessageId: string;
   timestamp: Date;
@@ -47,6 +53,7 @@ export interface OutgoingMedia {
  *  - 'status' (status: WaStatusDTO)
  *  - 'message' (msg: NormalizedMessage)
  *  - 'message-status' (updates: NormalizedStatusUpdate[])
+ *  - 'lid-mapping' (pairs: LidPnPair[]) — learned LID→phone-number pairs
  */
 export interface WhatsAppProvider {
   readonly kind: 'baileys' | 'cloud_api';
@@ -65,4 +72,6 @@ export interface WhatsAppProvider {
   sendMedia(jid: string, media: OutgoingMedia, opts?: { messageId?: string }): Promise<SendResult>;
   downloadMedia(raw: unknown): Promise<Buffer>;
   markRead(chatJid: string, messageIds: string[], participantJid?: string): Promise<void>;
+  /** Resolve LIDs to phone-number JIDs from the provider's store (LIDs it can't resolve are omitted). */
+  lookupPhoneJids?(lids: string[]): Promise<LidPnPair[]>;
 }
